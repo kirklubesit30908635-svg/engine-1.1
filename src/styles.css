@@ -1,0 +1,77 @@
+:root{
+  --bg:#07070a; --panel:rgba(255,255,255,.06); --border:rgba(255,255,255,.10);
+  --text:rgba(255,255,255,.92); --muted:rgba(255,255,255,.65);
+  --gold:#d6b15a; --gold2:rgba(214,177,90,.35); --shadow:0 18px 60px rgba(0,0,0,.55);
+  --radius:18px; --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:var(--sans); color:var(--text);
+  background:
+    radial-gradient(1200px 800px at 20% -10%, rgba(214,177,90,0.15), transparent 60%),
+    radial-gradient(1000px 700px at 110% 20%, rgba(214,177,90,0.08), transparent 60%),
+    var(--bg);
+}
+.page{min-height:100%; display:flex; flex-direction:column}
+.topbar{
+  display:flex; justify-content:space-between; align-items:center;
+  padding:18px 22px; border-bottom:1px solid var(--border);
+  background:rgba(0,0,0,.35); backdrop-filter:blur(10px);
+}
+.brand{display:flex; align-items:center; gap:12px}
+.mark{
+  width:38px;height:38px; display:grid;place-items:center; border-radius:12px;
+  background:linear-gradient(135deg, rgba(214,177,90,.25), rgba(214,177,90,.06));
+  border:1px solid var(--gold2); box-shadow:var(--shadow); color:var(--gold); font-weight:900;
+}
+.name{font-weight:900; letter-spacing:.3px}
+.tag{font-size:12px;color:var(--muted); margin-top:2px}
+.nav{display:flex; gap:10px}
+.tab{
+  padding:10px 12px; border-radius:999px; border:1px solid var(--border);
+  background:rgba(255,255,255,.04); color:var(--text); cursor:pointer;
+}
+.tab.active{border-color:var(--gold2); background:rgba(214,177,90,.12); color:var(--gold)}
+.main{width:min(1100px,92vw); margin:24px auto; flex:1}
+.panel{
+  border-radius:var(--radius); border:1px solid var(--border); box-shadow:var(--shadow);
+  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+  overflow:hidden;
+}
+.panelHead{padding:18px; border-bottom:1px solid var(--border); background:rgba(0,0,0,.22)}
+.panelTitle{font-weight:900}
+.panelSub{margin-top:6px; color:var(--muted); font-size:13px}
+.panelSub code{font-family:var(--mono); color:var(--gold)}
+.composer{padding:18px; display:grid; gap:12px}
+.input{
+  width:100%; border-radius:14px; border:1px solid var(--border);
+  background:rgba(0,0,0,.35); color:var(--text); padding:14px; resize:vertical; outline:none;
+}
+.input:focus{border-color:var(--gold2); box-shadow:0 0 0 3px rgba(214,177,90,.12)}
+.actions{display:flex; gap:10px; justify-content:flex-end}
+.btn{
+  padding:10px 14px; border-radius:12px; border:1px solid rgba(214,177,90,.35);
+  background:rgba(214,177,90,.12); color:var(--gold); font-weight:800; cursor:pointer;
+}
+.btn:disabled{opacity:.5; cursor:not-allowed}
+.btn.ghost{border-color:var(--border); background:rgba(255,255,255,.04); color:var(--text)}
+.alert{margin:0 18px 18px; padding:12px; border-radius:14px; border:1px solid rgba(255,90,90,.35); background:rgba(0,0,0,.35)}
+.alertTitle{font-weight:900; color:#ff5a5a; margin-bottom:6px}
+.result{margin:0 18px 18px; padding:12px; border-radius:14px; border:1px solid var(--gold2); background:rgba(214,177,90,.08)}
+.resultTitle{font-weight:900; color:var(--gold); margin-bottom:8px}
+.resultBody{margin:0; white-space:pre-wrap; font-family:var(--mono); font-size:13px; line-height:1.5}
+.hint{margin:0 18px 18px; color:var(--muted); padding:10px 2px 16px}
+.ledger{padding:18px; display:grid; gap:12px}
+.entry{border:1px solid var(--border); border-radius:14px; padding:12px; background:rgba(0,0,0,.28)}
+.meta{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:10px}
+.ts{font-family:var(--mono); font-size:12px; color:var(--muted)}
+.badge{font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:rgba(255,255,255,.04); color:var(--muted)}
+.badge.on{border-color:rgba(109,255,159,.35); color:#6dff9f}
+.badge.off{border-color:rgba(255,90,90,.25)}
+.q{font-weight:900; margin-bottom:6px}
+.a{color:rgba(255,255,255,.84); white-space:pre-wrap; line-height:1.5}
+.empty{color:var(--muted); padding:14px; border:1px dashed var(--border); border-radius:14px; background:rgba(0,0,0,.2)}
+.footer{padding:18px 22px; color:var(--muted); border-top:1px solid var(--border); display:flex; gap:10px; justify-content:center; background:rgba(0,0,0,.25)}
+.footer .dot{opacity:.6}
