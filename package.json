@@ -1,12 +1,11 @@
 {
-  "name": "autokirk-engine-one-site",
+  "name": "autokirk-engine-one",
   "private": true,
   "version": "1.0.0",
-  "description": "Autokirk Engine One static site + Netlify Functions",
-  "license": "UNLICENSED",
   "type": "commonjs",
   "scripts": {
-    "build": "echo \"no build\""
+    "build": "echo \"no build\"",
+    "start": "echo \"static site\""
   },
   "dependencies": {
     "openai": "^4.0.0"
