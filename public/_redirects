@@ -1,6 +1,2 @@
-# Force all /api/* calls to Netlify Functions
-/api/*  /.netlify/functions/:splat  200
-
-# Single-page fallback (keeps the console page working on refresh)
-/*  /index.html  200
+/.netlify/functions/*  /.netlify/functions/:splat  200
 
