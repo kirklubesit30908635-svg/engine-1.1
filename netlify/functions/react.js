@@ -1,252 +1,157 @@
 // netlify/functions/react.js
-// Engine One — Netlify Function (Supabase memory + OpenAI Responses API)
-
+import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 
-const corsHeaders = {
+const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 function json(statusCode, body) {
   return {
     statusCode,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json", ...cors },
     body: JSON.stringify(body),
   };
 }
 
-function extractOutputText(openaiJson) {
-  // Responses API often includes `output_text` as a convenience
-  if (openaiJson?.output_text && typeof openaiJson.output_text === "string") {
-    return openaiJson.output_text.trim();
-  }
-
-  // Otherwise walk the structure: output[].content[] where type === "output_text"
-  const out = openaiJson?.output;
-  if (Array.isArray(out)) {
-    for (const item of out) {
-      const content = item?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c?.type === "output_text" && typeof c?.text === "string") {
-            return c.text.trim();
-          }
-        }
-      }
-    }
-  }
-
-  // Fallback: stringify something useful
-  return typeof openaiJson === "object"
-    ? JSON.stringify(openaiJson).slice(0, 2000)
-    : String(openaiJson);
-}
-
-async function getMemory(supabase, limit = 20) {
-  const { data, error } = await supabase
-    .from("engine_one_memory")
-    .select("id, created_at, prompt, response, answer, ai_used")
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw error;
-  return data || [];
-}
-
-export async function handler(event) {
-  // Preflight
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 200, headers: corsHeaders, body: "" };
-  }
-
-  const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const SUPABASE_SERVICE_ROLE_KEY =
-    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE;
-
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-
-  if (!SUPABASE_URL) return json(500, { ok: false, error: "Missing SUPABASE_URL" });
-  if (!SUPABASE_SERVICE_ROLE_KEY)
-    return json(500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+  if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
 
   try {
-    // Simple health/memory fetch via GET
-    if (event.httpMethod === "GET") {
-      const memory = await getMemory(supabase, 20);
-      return json(200, { ok: true, mode: "memory", memory });
+    const SUPABASE_URL = process.env.SUPABASE_URL;
+    const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return json(500, { error: "Missing Supabase env vars (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)" });
     }
 
-    if (event.httpMethod !== "POST") {
-      return json(405, { ok: false, error: "Method not allowed" });
-    }
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    });
 
-    const body = event.body ? JSON.parse(event.body) : {};
-    const action = body.action || "execute";
+    const payload = JSON.parse(event.body || "{}");
+    const prompt = String(payload.prompt ?? payload.input ?? "").trim();
 
-    // Refresh memory
-    if (action === "memory" || action === "refresh_memory" || action === "refresh") {
-      const memory = await getMemory(supabase, 20);
-      return json(200, { ok: true, mode: "memory", memory });
-    }
+    if (!prompt) return json(400, { error: "Missing prompt" });
 
-    // Execute command
-    const prompt =
-      (body.command ?? body.prompt ?? body.input ?? body.text ?? "").toString().trim();
-
-    if (!prompt) {
-      return json(400, { ok: false, error: "Missing command/prompt/input" });
-    }
-
-    // Default fallback scaffolding (only used if OpenAI fails)
-    const fallbackAnswer =
-      `Engine One (Fallback Mode)\n` +
-      `Intent captured:\n- ${prompt}\n\n` +
-      `Execution scaffold:\n` +
-      `1) Define the outcome in one sentence.\n` +
-      `2) Pick the 3 highest-leverage actions.\n` +
-      `3) Identify the single blocker.\n` +
-      `4) Execute the smallest irreversible step.\n` +
-      `5) Log result + next move.\n`;
-
-    // If no OpenAI key, log fallback and return
+    // If no OpenAI key, still log prompt with fallback answer
     if (!OPENAI_API_KEY) {
-      const { error: insertErr } = await supabase.from("engine_one_memory").insert({
-        prompt,
-        response: null,
-        answer: fallbackAnswer,
-        ai_used: "false",
-      });
-
-      if (insertErr) return json(500, { ok: false, error: insertErr.message });
-      const memory = await getMemory(supabase, 20);
-      return json(200, { ok: true, mode: "fallback", ai_used: false, answer: fallbackAnswer, memory });
+      const answer = "Engine One (Fallback Mode) Intent captured.\n\nNext: connect OPENAI_API_KEY in Netlify env vars.";
+      await supabase.from("engine_one_memory").insert([{ prompt, answer, ai_used: false }]);
+      return json(200, { answer, ai_used: false, mode: "fallback" });
     }
 
-    // ---- OpenAI Responses API call (FIXED: type is input_text) ----
-    let aiText = "";
-    let openaiRaw = null;
+    const client = new OpenAI({ apiKey: OPENAI_API_KEY });
+    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-    try {
-      const payload = {
-        model: OPENAI_MODEL,
-        ,const SYSTEM = `
-You are Engine One for Autokirk: "Clarity → Execution".
-Convert the user's intent into an executable plan and the smallest next step.
-Be concise, decisive, action-oriented. No generic AI explanations unless explicitly requested.
+    // IMPORTANT: Correct Responses API content types:
+    // Supported: input_text, input_image, output_text, etc.
+    const SYSTEM = [
+      "You are Autokirk Engine One.",
+      "Mission: Clarity → Execution.",
+      "Output format:",
+      "1) One-sentence outcome.",
+      "2) Top 3 highest-leverage actions (numbered).",
+      "3) Single blocker.",
+      "4) Smallest irreversible step.",
+      "5) Next move.",
+      "Rules: No filler. No 'as an AI'. Concrete steps.",
+    ].join("\n");
 
-Output must follow this exact format:
+    const started = Date.now();
 
-OUTCOME:
-<one sentence>
+    const resp = await client.responses.create({
+      model,
+      input: [
+        { role: "system", content: [{ type: "input_text", text: SYSTEM }] },
+        { role: "user", content: [{ type: "input_text", text: prompt }] },
+      ],
+      temperature: 0.2,
+      max_output_tokens: 700,
+    });
 
-TOP 3 MOVES:
-1) <high leverage action>
-2) <high leverage action>
-3) <high leverage action>
+    // Best universal extraction: output_text
+    const answer = (resp.output_text || "").trim() || "No output_text returned.";
 
-BLOCKER:
-<single biggest blocker>
+    const ms = Date.now() - started;
 
-NEXT STEP (DO THIS NOW):
-<one small irreversible action that can be done in <10 minutes>
+    // Log to Supabase — match your schema exactly
+    const { error: dbErr } = await supabase
+      .from("engine_one_memory")
+      .insert([{ prompt, answer, ai_used: true }]);
 
-CHECK-IN QUESTION:
-<one question ONLY if required; otherwise write "None.">
+    if (dbErr) {
+      // Still return the AI answer; show DB failure explicitly
+      return json(200, {
+        answer,
+        ai_used: true,
+        model,
+        latency_ms: ms,
+        warning: "AI succeeded but Supabase insert failed",
+        supabase_error: dbErr,
+      });
+    }
 
-RULES:
-- No filler.
-- No "as an AI" talk.
-- Prefer concrete steps, buttons, filenames, commands.
-- If the user intent is vague ("work"), propose 3 plausible outcomes and ask them to pick one.
-`;
+    return json(200, { answer, ai_used: true, model, latency_ms: ms });
+  } catch (err) {
+    return json(500, {
+      error: "Server error",
+      message: err?.message || String(err),
+      stack: err?.stack || null,
+    });
+  }
+};
+// netlify/functions/memory.js
+import { createClient } from "@supabase/supabase-js";
 
-const payload = {
-  model: OPENAI_MODEL,
-  input: [
-    { role: "system", content: [{ type: "input_text", text: SYSTEM }] },
-    { role: "user", content: [{ type: "input_text", text: prompt }] }
-  ],
-  temperature: 0.2,
-  max_output_tokens: 700
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
 
-        // Keep it stable and operator-grade
-        temperature: 0.2,
-        max_output_tokens: 700,
-      };
+function json(statusCode, body) {
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json", ...cors },
+    body: JSON.stringify(body),
+  };
+}
 
-      const resp = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
+  if (event.httpMethod !== "GET") return json(405, { error: "Method not allowed" });
 
-      openaiRaw = await resp.json();
+  try {
+    const SUPABASE_URL = process.env.SUPABASE_URL;
+    const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-      if (!resp.ok) {
-        // Throw to fallback path
-        const msg =
-          openaiRaw?.error?.message ||
-          `OpenAI error (${resp.status})`;
-        throw new Error(msg);
-      }
-
-      aiText = extractOutputText(openaiRaw);
-    } catch (e) {
-      // OpenAI failed → log fallback
-      const { error: insertErr } = await supabase.from("engine_one_memory").insert({
-        prompt,
-        response: null,
-        answer: fallbackAnswer + `\n(Operator note: ${String(e.message || e)})`,
-        ai_used: "false",
-      });
-
-      if (insertErr) return json(500, { ok: false, error: insertErr.message });
-
-      const memory = await getMemory(supabase, 20);
-      return json(200, {
-        ok: true,
-        mode: "fallback",
-        ai_used: false,
-        answer: fallbackAnswer,
-        error: String(e.message || e),
-        memory,
-      });
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return json(500, { error: "Missing Supabase env vars (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)" });
     }
 
-    // Log success (store in BOTH response + answer to satisfy any front-end expectations)
-    const { error: logErr } = await supabase.from("engine_one_memory").insert({
-      prompt,
-      response: aiText,
-      answer: aiText,
-      ai_used: "true",
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
     });
 
-    if (logErr) return json(500, { ok: false, error: logErr.message });
+    const { data, error } = await supabase
+      .from("engine_one_memory")
+      .select("id, created_at, prompt, answer, ai_used")
+      .order("created_at", { ascending: false })
+      .limit(20);
 
-    const memory = await getMemory(supabase, 20);
+    if (error) return json(500, { error: "Supabase select failed", supabase_error: error });
 
-    return json(200, {
-      ok: true,
-      mode: "ai",
-      ai_used: true,
-      answer: aiText,
-      response: aiText,
-      memory,
-      // optional debug if you ever need it:
-      // openai: openaiRaw,
-    });
+    return json(200, data || []);
   } catch (err) {
-    return json(500, { ok: false, error: String(err?.message || err) });
+    return json(500, {
+      error: "Server error",
+      message: err?.message || String(err),
+      stack: err?.stack || null,
+    });
   }
-}
+};
