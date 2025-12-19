@@ -47,58 +47,26 @@ Return ONLY a single JSON object with EXACTLY these keys:
   "next_action": string
 }
 
-RULES:
-- title: 4–10 words, punchy.
-- executive_signal: 2–5 sentences, specific and direct.
-- action_plan: 3–8 steps, imperative verbs.
-- risks_and_controls: 2–6 bullets, each includes a mitigation.
-- next_action: ONE concrete step doable in <15 minutes.
-
 Return valid JSON only. No markdown. No code fences.
 `.trim();
 
-function requireEngineKey(event) {
-  const expected = process.env.ENGINE_ONE_API_KEY;
-  if (!expected) return { ok: true };
-
-  const provided =
-    event.headers?.["x-engine-key"] ||
-    event.headers?.["X-Engine-Key"] ||
-    event.headers?.["x-engine-key".toLowerCase()];
-
-  if (!provided || String(provided) !== String(expected)) {
-    return { ok: false, error: "Unauthorized (missing or invalid x-engine-key)" };
-  }
-  return { ok: true };
-}
-
 exports.handler = async (event) => {
-  const t0 = Date.now();
-
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: corsHeaders, body: "" };
   }
-
   if (event.httpMethod !== "POST") {
-    return reply(405, { ok: false, error: "Method Not Allowed", allowed: ["POST", "OPTIONS"] });
+    return reply(405, { ok: false, error: "Method Not Allowed" });
   }
-
-  const gate = requireEngineKey(event);
-  if (!gate.ok) return reply(401, { ok: false, error: gate.error });
 
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  if (!OPENAI_API_KEY) {
-    return reply(500, { ok: false, error: "Server misconfigured: missing OPENAI_API_KEY" });
-  }
+  if (!OPENAI_API_KEY) return reply(500, { ok: false, error: "Missing OPENAI_API_KEY" });
 
   const parsed = safeJsonParse(event.body);
   if (!parsed.ok) return reply(400, { ok: false, error: parsed.error });
 
   const body = parsed.value || {};
   const input = pickInput(body);
-  if (!input) {
-    return reply(400, { ok: false, error: "Missing input text. Provide: prompt | message | input | text" });
-  }
+  if (!input) return reply(400, { ok: false, error: "Missing input" });
 
   const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : "gpt-4.1-mini";
   const temperature = clampNumber(body.temperature, 0, 2, 0.35);
@@ -117,57 +85,16 @@ exports.handler = async (event) => {
       ],
     });
 
-    let raw = (result.output_text || "").trim();
-    if (!raw && Array.isArray(result.output)) {
-      raw = result.output
-        .map((o) => (o.content || []).map((c) => (c.type === "output_text" ? c.text : "")).join(""))
-        .join("")
-        .trim();
+    const raw = (result.output_text || "").trim();
+    let payload = null;
+    try { payload = JSON.parse(raw); } catch {}
+
+    if (!payload) {
+      return reply(502, { ok: false, error: "Non-JSON output from model", raw_preview: raw.slice(0, 300) });
     }
 
-    let enginePayload = null;
-    try {
-      enginePayload = JSON.parse(raw);
-    } catch {
-      const start = raw.indexOf("{");
-      const end = raw.lastIndexOf("}");
-      if (start !== -1 && end !== -1 && end > start) {
-        try { enginePayload = JSON.parse(raw.slice(start, end + 1)); }
-        catch { enginePayload = null; }
-      }
-    }
-
-    if (!enginePayload || typeof enginePayload !== "object") {
-      return reply(502, {
-        ok: false,
-        error: "Engine One output contract violated (non-JSON or unparsable).",
-        diagnostics: { request_id: result.id || null, raw_preview: raw.slice(0, 300) },
-      });
-    }
-
-    const requiredKeys = ["title","executive_signal","action_plan","risks_and_controls","next_action"];
-    for (const k of requiredKeys) {
-      if (!(k in enginePayload)) {
-        return reply(502, { ok: false, error: `Engine One output missing key: ${k}`, diagnostics: { request_id: result.id || null } });
-      }
-    }
-
-    return reply(200, {
-      ok: true,
-      engine: "engine-one",
-      request_id: result.id || null,
-      model,
-      latency_ms: Date.now() - t0,
-      output: enginePayload
-    });
+    return reply(200, { ok: true, request_id: result.id || null, output: payload });
   } catch (err) {
-    return reply(500, {
-      ok: false,
-      engine: "engine-one",
-      latency_ms: Date.now() - t0,
-      error: "Engine One execution failure",
-      details: err?.message || "Unknown error"
-    });
+    return reply(500, { ok: false, error: "Execution failure", details: err?.message || "Unknown error" });
   }
 };
-
