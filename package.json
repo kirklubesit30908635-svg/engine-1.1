@@ -4,8 +4,7 @@
   "version": "1.0.0",
   "type": "commonjs",
   "scripts": {
-    "build": "echo \"no build\"",
-    "start": "echo \"static site\""
+    "build": "echo \"no build\""
   },
   "dependencies": {
     "openai": "^4.0.0"
