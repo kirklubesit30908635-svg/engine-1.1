@@ -1,15 +1,5 @@
-/**
- * Autokirk Engine One (Netlify Function)
- * - CommonJS (Netlify-safe)
- * - JSON-only contract output (frontend-parseable)
- * - CORS + OPTIONS + POST-only
- */
-
 const OpenAI = require("openai");
 
-// -------------------------
-// Response helpers
-// -------------------------
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Engine-Key",
@@ -17,21 +7,14 @@ const corsHeaders = {
   "Content-Type": "application/json; charset=utf-8",
 };
 
-function reply(statusCode, payload, extraHeaders = {}) {
-  return {
-    statusCode,
-    headers: { ...corsHeaders, ...extraHeaders },
-    body: JSON.stringify(payload),
-  };
+function reply(statusCode, payload) {
+  return { statusCode, headers: corsHeaders, body: JSON.stringify(payload) };
 }
 
 function safeJsonParse(raw) {
   if (!raw || typeof raw !== "string") return { ok: false, error: "Empty body" };
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch {
-    return { ok: false, error: "Invalid JSON body" };
-  }
+  try { return { ok: true, value: JSON.parse(raw) }; }
+  catch { return { ok: false, error: "Invalid JSON body" }; }
 }
 
 function pickInput(body) {
@@ -45,9 +28,6 @@ function clampNumber(n, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
-// -------------------------
-// Engine One doctrine
-// -------------------------
 const SYSTEM_DOCTRINE = `
 You are AUTOKIRK ENGINE ONE.
 
@@ -77,9 +57,6 @@ RULES:
 Return valid JSON only. No markdown. No code fences.
 `.trim();
 
-// -------------------------
-// Optional pre-Stripe gate (disable by not setting ENGINE_ONE_API_KEY)
-// -------------------------
 function requireEngineKey(event) {
   const expected = process.env.ENGINE_ONE_API_KEY;
   if (!expected) return { ok: true };
@@ -95,63 +72,37 @@ function requireEngineKey(event) {
   return { ok: true };
 }
 
-// -------------------------
-// Netlify handler
-// -------------------------
 exports.handler = async (event) => {
   const t0 = Date.now();
 
-  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: corsHeaders, body: "" };
   }
 
-  // POST-only
   if (event.httpMethod !== "POST") {
-    return reply(405, {
-      ok: false,
-      error: "Method Not Allowed",
-      allowed: ["POST", "OPTIONS"],
-    });
+    return reply(405, { ok: false, error: "Method Not Allowed", allowed: ["POST", "OPTIONS"] });
   }
 
-  // Optional pre-Stripe gate
   const gate = requireEngineKey(event);
   if (!gate.ok) return reply(401, { ok: false, error: gate.error });
 
-  // Env validation
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   if (!OPENAI_API_KEY) {
-    return reply(500, {
-      ok: false,
-      error: "Server misconfigured: missing OPENAI_API_KEY",
-    });
+    return reply(500, { ok: false, error: "Server misconfigured: missing OPENAI_API_KEY" });
   }
 
-  // Body parsing
   const parsed = safeJsonParse(event.body);
   if (!parsed.ok) return reply(400, { ok: false, error: parsed.error });
 
   const body = parsed.value || {};
   const input = pickInput(body);
   if (!input) {
-    return reply(400, {
-      ok: false,
-      error: "Missing input text. Provide: prompt | message | input | text",
-    });
+    return reply(400, { ok: false, error: "Missing input text. Provide: prompt | message | input | text" });
   }
 
-  // Controls
-  const model =
-    typeof body.model === "string" && body.model.trim()
-      ? body.model.trim()
-      : "gpt-4.1-mini";
-
+  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : "gpt-4.1-mini";
   const temperature = clampNumber(body.temperature, 0, 2, 0.35);
   const max_output_tokens = clampNumber(body.max_output_tokens, 64, 1400, 900);
-
-  const user_id =
-    typeof body.user_id === "string" ? body.user_id.slice(0, 64) : undefined;
 
   const client = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -162,25 +113,18 @@ exports.handler = async (event) => {
       max_output_tokens,
       input: [
         { role: "system", content: SYSTEM_DOCTRINE },
-        { role: "user", content: input },
+        { role: "user", content: input }
       ],
-      user: user_id,
     });
 
-    // Extract text
     let raw = (result.output_text || "").trim();
     if (!raw && Array.isArray(result.output)) {
       raw = result.output
-        .map((o) =>
-          (o.content || [])
-            .map((c) => (c.type === "output_text" ? c.text : ""))
-            .join("")
-        )
+        .map((o) => (o.content || []).map((c) => (c.type === "output_text" ? c.text : "")).join(""))
         .join("")
         .trim();
     }
 
-    // Parse JSON (recover if wrapped)
     let enginePayload = null;
     try {
       enginePayload = JSON.parse(raw);
@@ -188,11 +132,8 @@ exports.handler = async (event) => {
       const start = raw.indexOf("{");
       const end = raw.lastIndexOf("}");
       if (start !== -1 && end !== -1 && end > start) {
-        try {
-          enginePayload = JSON.parse(raw.slice(start, end + 1));
-        } catch {
-          enginePayload = null;
-        }
+        try { enginePayload = JSON.parse(raw.slice(start, end + 1)); }
+        catch { enginePayload = null; }
       }
     }
 
@@ -200,28 +141,14 @@ exports.handler = async (event) => {
       return reply(502, {
         ok: false,
         error: "Engine One output contract violated (non-JSON or unparsable).",
-        diagnostics: {
-          request_id: result.id || null,
-          raw_preview: raw ? raw.slice(0, 300) : "",
-        },
+        diagnostics: { request_id: result.id || null, raw_preview: raw.slice(0, 300) },
       });
     }
 
-    // Key presence check
-    const requiredKeys = [
-      "title",
-      "executive_signal",
-      "action_plan",
-      "risks_and_controls",
-      "next_action",
-    ];
+    const requiredKeys = ["title","executive_signal","action_plan","risks_and_controls","next_action"];
     for (const k of requiredKeys) {
       if (!(k in enginePayload)) {
-        return reply(502, {
-          ok: false,
-          error: `Engine One output missing key: ${k}`,
-          diagnostics: { request_id: result.id || null },
-        });
+        return reply(502, { ok: false, error: `Engine One output missing key: ${k}`, diagnostics: { request_id: result.id || null } });
       }
     }
 
@@ -231,7 +158,7 @@ exports.handler = async (event) => {
       request_id: result.id || null,
       model,
       latency_ms: Date.now() - t0,
-      output: enginePayload,
+      output: enginePayload
     });
   } catch (err) {
     return reply(500, {
@@ -239,7 +166,7 @@ exports.handler = async (event) => {
       engine: "engine-one",
       latency_ms: Date.now() - t0,
       error: "Engine One execution failure",
-      details: err?.message || "Unknown error",
+      details: err?.message || "Unknown error"
     });
   }
 };
