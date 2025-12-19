@@ -1,12 +1,340 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Autokirk Engine One</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Autokirk Engine One — Console</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: #0b0f14;
+      color: #e9eef5;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .brand { font-weight: 800; letter-spacing: .3px; }
+    .pill {
+      font-size: 12px; opacity: .9;
+      padding: 6px 10px; border: 1px solid rgba(255,255,255,.12);
+      border-radius: 999px;
+      background: rgba(255,255,255,.04);
+    }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1.1fr .9fr; } }
+    .card {
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    label { display:block; font-size: 12px; opacity:.9; margin-bottom: 6px; }
+    input, textarea, select {
+      width: 100%;
+      box-sizing: border-box;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(255,255,255,.12);
+      color: #e9eef5;
+      border-radius: 12px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    textarea { min-height: 160px; resize: vertical; line-height: 1.35; }
+    .row { display:flex; gap: 10px; align-items:center; }
+    .row > * { flex: 1; }
+    .btnrow { display:flex; gap: 10px; }
+    button {
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(255,255,255,.06);
+      color: #e9eef5;
+      border-radius: 14px;
+      padding: 10px 14px;
+      font-weight: 700;
+    }
+    button.primary {
+      background: linear-gradient(135deg, rgba(255,215,64,.22), rgba(255,215,64,.10));
+      border-color: rgba(255,215,64,.35);
+    }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .metrics { display:grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px;}
+    .metric {
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.03);
+      border-radius: 14px;
+      padding: 10px;
+    }
+    .metric .k { font-size: 12px; opacity:.85; }
+    .metric .v { font-size: 18px; font-weight: 800; margin-top: 4px; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 1.35;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(0,0,0,.35);
+      min-height: 240px;
+    }
+    .sectionTitle { font-weight: 800; margin-bottom: 10px; }
+    .muted { opacity: .8; }
+    .error { color: #ffb4b4; }
+    .ok { color: #b9ffcc; }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">Autokirk Engine One — Console</div>
+      <div class="pill">clarity → execution</div>
+    </div>
+
+    <div class="grid">
+      <!-- LEFT: Controls -->
+      <div class="card">
+        <div class="sectionTitle">Request</div>
+
+        <div class="row" style="margin-bottom:12px;">
+          <div>
+            <label for="endpoint">Endpoint</label>
+            <input id="endpoint" type="text" value="/.netlify/functions/engine-one" />
+          </div>
+          <div>
+            <label for="model">Model (optional)</label>
+            <input id="model" type="text" value="gpt-4.1-mini" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-bottom:12px;">
+          <div>
+            <label for="engineKey">x-engine-key (optional / pre-Stripe gate)</label>
+            <input id="engineKey" type="password" placeholder="Only needed if ENGINE_ONE_API_KEY gate is enabled" />
+          </div>
+          <div>
+            <label for="temperature">Temperature</label>
+            <input id="temperature" type="number" step="0.05" min="0" max="2" value="0.35" />
+          </div>
+          <div>
+            <label for="maxTokens">Max Output Tokens</label>
+            <input id="maxTokens" type="number" step="1" min="64" max="1400" value="900" />
+          </div>
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <label for="input">Input</label>
+          <textarea id="input">Define the fastest path to monetize Engine One on autokirk.com</textarea>
+        </div>
+
+        <div class="btnrow">
+          <button class="primary" id="executeBtn">Execute</button>
+          <button id="resetBtn">Reset</button>
+        </div>
+
+        <div class="metrics">
+          <div class="metric">
+            <div class="k">Latency</div>
+            <div class="v" id="latency">—</div>
+          </div>
+          <div class="metric">
+            <div class="k">Status</div>
+            <div class="v" id="status">—</div>
+          </div>
+          <div class="metric">
+            <div class="k">Request ID</div>
+            <div class="v" id="requestId">—</div>
+          </div>
+        </div>
+
+        <div class="muted" style="margin-top:10px; font-size:12px;">
+          Shortcut: <b>Ctrl/⌘ + Enter</b>
+        </div>
+      </div>
+
+      <!-- RIGHT: Output -->
+      <div class="card">
+        <div class="sectionTitle">Visible Reaction</div>
+        <pre id="output">Ready.</pre>
+
+        <div style="margin-top:12px;">
+          <details>
+            <summary class="muted" style="cursor:pointer; font-weight:700;">Raw response (diagnostics)</summary>
+            <pre id="raw" style="margin-top:10px; min-height:160px;">—</pre>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------------
+    // DOM
+    // ----------------------------
+    const el = (id) => document.getElementById(id);
+
+    const endpointEl = el("endpoint");
+    const modelEl = el("model");
+    const engineKeyEl = el("engineKey");
+    const tempEl = el("temperature");
+    const maxTokensEl = el("maxTokens");
+    const inputEl = el("input");
+
+    const executeBtn = el("executeBtn");
+    const resetBtn = el("resetBtn");
+
+    const latencyEl = el("latency");
+    const statusEl = el("status");
+    const requestIdEl = el("requestId");
+    const outputEl = el("output");
+    const rawEl = el("raw");
+
+    // ----------------------------
+    // Helpers
+    // ----------------------------
+    function setStatus(text, ok = true) {
+      statusEl.textContent = text;
+      statusEl.className = "v " + (ok ? "ok" : "error");
+    }
+
+    function pretty(obj) {
+      return JSON.stringify(obj, null, 2);
+    }
+
+    function renderEngineOutput(payload) {
+      // Payload expected: { title, executive_signal, action_plan[], risks_and_controls[], next_action }
+      // Render as readable text block (not [object Object])
+      const o = payload || {};
+      const lines = [];
+
+      if (o.title) lines.push(String(o.title).trim(), "");
+      if (o.executive_signal) lines.push(String(o.executive_signal).trim(), "");
+
+      if (Array.isArray(o.action_plan) && o.action_plan.length) {
+        lines.push("ACTION PLAN");
+        o.action_plan.forEach((s, i) => lines.push(`${i + 1}. ${String(s).trim()}`));
+        lines.push("");
+      }
+
+      if (Array.isArray(o.risks_and_controls) && o.risks_and_controls.length) {
+        lines.push("RISKS & CONTROLS");
+        o.risks_and_controls.forEach((s, i) => lines.push(`- ${String(s).trim()}`));
+        lines.push("");
+      }
+
+      if (o.next_action) {
+        lines.push("NEXT ACTION");
+        lines.push(String(o.next_action).trim());
+      }
+
+      const text = lines.join("\n").trim();
+      outputEl.textContent = text || "(No output fields returned.)";
+    }
+
+    async function execute() {
+      const endpoint = endpointEl.value.trim();
+      const model = modelEl.value.trim();
+      const engineKey = engineKeyEl.value.trim();
+      const temperature = Number(tempEl.value);
+      const max_output_tokens = Number(maxTokensEl.value);
+      const input = inputEl.value;
+
+      outputEl.textContent = "Executing…";
+      rawEl.textContent = "—";
+      latencyEl.textContent = "—";
+      requestIdEl.textContent = "—";
+      setStatus("RUNNING", true);
+
+      executeBtn.disabled = true;
+
+      const headers = { "Content-Type": "application/json" };
+      if (engineKey) headers["x-engine-key"] = engineKey;
+
+      const body = {
+        input,
+        model: model || undefined,
+        temperature: Number.isFinite(temperature) ? temperature : undefined,
+        max_output_tokens: Number.isFinite(max_output_tokens) ? max_output_tokens : undefined,
+      };
+
+      const t0 = performance.now();
+
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+
+        const t1 = performance.now();
+        latencyEl.textContent = `${Math.round(t1 - t0)} ms`;
+
+        const text = await res.text();
+        let data = null;
+
+        try { data = JSON.parse(text); } catch { data = { _raw: text }; }
+
+        rawEl.textContent = pretty({ http_status: res.status, ...data });
+
+        requestIdEl.textContent = data?.request_id ? String(data.request_id) : "—";
+
+        if (!res.ok || data?.ok === false) {
+          setStatus(`ERROR ${res.status}`, false);
+          outputEl.textContent =
+            (data && (data.error || data.details)) ?
+              `${data.error || "Error"}\n${data.details ? "\n" + data.details : ""}` :
+              `Request failed with status ${res.status}`;
+          return;
+        }
+
+        setStatus(`OK ${res.status}`, true);
+
+        // THE FIX: render object properly (never [object Object])
+        if (data && data.output && typeof data.output === "object") {
+          renderEngineOutput(data.output);
+        } else {
+          // Fallback: show full JSON
+          outputEl.textContent = pretty(data);
+        }
+      } catch (err) {
+        setStatus("NETWORK ERROR", false);
+        outputEl.textContent = String(err?.message || err);
+      } finally {
+        executeBtn.disabled = false;
+      }
+    }
+
+    function reset() {
+      outputEl.textContent = "Ready.";
+      rawEl.textContent = "—";
+      latencyEl.textContent = "—";
+      requestIdEl.textContent = "—";
+      statusEl.textContent = "—";
+      statusEl.className = "v";
+    }
+
+    // ----------------------------
+    // Events
+    // ----------------------------
+    executeBtn.addEventListener("click", execute);
+    resetBtn.addEventListener("click", reset);
+
+    document.addEventListener("keydown", (e) => {
+      const isEnter = e.key === "Enter";
+      const isCmd = e.metaKey;
+      const isCtrl = e.ctrlKey;
+      if (isEnter && (isCmd || isCtrl)) {
+        e.preventDefault();
+        execute();
+      }
+    });
+  </script>
+</body>
 </html>
