@@ -1,10 +1,7 @@
 [build]
   publish = "."
+  command = "echo 'no build'"
   functions = "netlify/functions"
 
-# Stable API route for your site + future Stripe gating
-[[redirects]]
-  from = "/api/engine-one"
-  to = "/.netlify/functions/engine-one"
-  status = 200
-  force = true
+[functions]
+  node_bundler = "esbuild"
