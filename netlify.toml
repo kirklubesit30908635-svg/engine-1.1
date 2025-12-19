@@ -1,17 +1,10 @@
 [build]
-  command = "npm run build"
-  publish = "dist"
+  publish = "."
   functions = "netlify/functions"
 
-[functions]
-  node_bundler = "esbuild"
-
+# Stable API route for your site + future Stripe gating
 [[redirects]]
-  from = "/api/react"
-  to = "/.netlify/functions/react"
+  from = "/api/engine-one"
+  to = "/.netlify/functions/engine-one"
   status = 200
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+  force = true
