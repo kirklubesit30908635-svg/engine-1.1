@@ -1,445 +1,313 @@
-import Ajv from "ajv";
-import addFormats from "ajv-formats";
+// /netlify/functions/react.js
+// Engine One – single Netlify function that supports:
+// - POST /api/react          -> executes prompt via OpenAI (fallback if OpenAI fails) and logs to Supabase
+// - GET  /api/react?op=ledger -> returns last N ledger entries from Supabase
+// - GET  /api/react?op=health -> returns env + supabase connectivity status (no secrets)
+//
+// Requires env vars in Netlify:
+//   SUPABASE_URL
+//   SUPABASE_SERVICE_ROLE_KEY   (recommended; bypasses RLS)
+//   OPENAI_API_KEY              (optional; if missing -> fallback mode)
+// Optional env vars:
+//   OPENAI_MODEL (default "gpt-4.1-mini")
 
-/**
- * Engine One Validator — Extreme
- * - Strict JSON Schema validation
- * - XOR envelope contract enforcement ({result} OR {error})
- * - Normalization (domain lowercasing, trimming)
- * - Read-only audit findings (risk flags)
- *
- * Endpoints:
- * - GET  /?mode=health
- * - GET  /?mode=spec
- * - POST /  { mode, payload }
- */
+import { createClient } from "@supabase/supabase-js";
 
-const cors = {
+const TABLE = "engine_one_memory";
+
+const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "content-type, authorization",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 };
 
-function res(statusCode, body) {
+function json(statusCode, bodyObj) {
   return {
     statusCode,
-    headers: { "Content-Type": "application/json", ...cors },
-    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders },
+    body: JSON.stringify(bodyObj),
   };
 }
 
-// XOR envelope helpers
-function ok(resultArray) {
-  return res(200, { result: resultArray });
+function nowIso() {
+  return new Date().toISOString();
 }
 
-function fail(code, status, message, errors = []) {
-  return res(code, {
-    error: {
-      code,
-      status,
-      message,
-      errors,
+function safeTrim(s, max = 20000) {
+  if (typeof s !== "string") return "";
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max) + "\n\n[TRUNCATED]";
+}
+
+function requiredEnv(name) {
+  const v = process.env[name];
+  return (typeof v === "string" && v.trim().length > 0) ? v.trim() : null;
+}
+
+function buildFallbackAnswer(prompt, reason) {
+  const p = safeTrim(prompt, 2000);
+  return [
+    `Engine One (Fallback Mode)`,
+    ``,
+    `Intent captured:`,
+    `- ${p || "(empty)"}`,
+    ``,
+    `Execution scaffold:`,
+    `1) Define the outcome in one sentence.`,
+    `2) Pick the 3 highest-leverage actions.`,
+    `3) Identify the single blocker.`,
+    `4) Execute the smallest irreversible step.`,
+    `5) Log result + next move.`,
+    ``,
+    `Next step: reply with your one-sentence outcome and top blocker.`,
+    reason ? `` : null,
+    reason ? `(Operator note: ${reason})` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function extractOutputText(openaiJson) {
+  // Prefer the convenience field if present
+  if (openaiJson && typeof openaiJson.output_text === "string" && openaiJson.output_text.trim()) {
+    return openaiJson.output_text.trim();
+  }
+
+  // Robust fallback: walk the output structure
+  try {
+    const out = openaiJson?.output;
+    if (Array.isArray(out)) {
+      const chunks = [];
+      for (const item of out) {
+        const content = item?.content;
+        if (Array.isArray(content)) {
+          for (const c of content) {
+            // Responses API typically uses: { type: "output_text", text: "..." }
+            if (typeof c?.text === "string") chunks.push(c.text);
+          }
+        }
+      }
+      const joined = chunks.join("\n").trim();
+      if (joined) return joined;
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  return "";
+}
+
+async function openaiRespond({ prompt }) {
+  const OPENAI_API_KEY = requiredEnv("OPENAI_API_KEY");
+  const model = requiredEnv("OPENAI_MODEL") || "gpt-4.1-mini";
+
+  if (!OPENAI_API_KEY) {
+    return {
+      ok: false,
+      ai_used: false,
+      model: null,
+      output: buildFallbackAnswer(prompt, "OPENAI_API_KEY missing"),
+      error: "OPENAI_API_KEY missing",
+      raw: null,
+    };
+  }
+
+  // Use Responses API with "input" as a plain string to avoid the invalid content-type errors.
+  const payload = {
+    model,
+    input: safeTrim(prompt, 12000),
+    temperature: 0.2,
+    max_output_tokens: 900,
+  };
+
+  const t0 = Date.now();
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify(payload),
+  });
+
+  const ms = Date.now() - t0;
+  const text = await res.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch { /* non-json */ }
+
+  if (!res.ok) {
+    const msg =
+      (data?.error?.message && String(data.error.message)) ||
+      (typeof text === "string" && text.slice(0, 500)) ||
+      `OpenAI request failed (${res.status})`;
+
+    return {
+      ok: false,
+      ai_used: false,
+      model,
+      output: buildFallbackAnswer(prompt, msg),
+      error: msg,
+      raw: data || { raw_text: text },
+      meta: { status: res.status, ms },
+    };
+  }
+
+  const output = extractOutputText(data);
+  if (!output) {
+    const msg = "OpenAI returned no output text (unexpected response shape).";
+    return {
+      ok: false,
+      ai_used: false,
+      model,
+      output: buildFallbackAnswer(prompt, msg),
+      error: msg,
+      raw: data,
+      meta: { status: res.status, ms },
+    };
+  }
+
+  return {
+    ok: true,
+    ai_used: true,
+    model,
+    output,
+    error: null,
+    raw: data,
+    meta: { status: res.status, ms },
+  };
+}
+
+function supabaseClient() {
+  const url = requiredEnv("SUPABASE_URL");
+  const service = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const anon = requiredEnv("SUPABASE_ANON_KEY");
+
+  // Prefer service role (server-side only)
+  const key = service || anon;
+
+  if (!url || !key) return null;
+
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { "X-Client-Info": "autokirk-engine-one/netlify" } },
   });
 }
 
-function errItem({ domain, location, locationType, message, reason }) {
-  return { domain, location, locationType, message, reason };
+async function logToLedger({ sb, prompt, answer, ai_used }) {
+  // Match your schema: prompt text not null, answer text not null, ai_used boolean default false
+  const row = {
+    prompt: safeTrim(prompt, 12000),
+    answer: safeTrim(answer, 20000),
+    ai_used: !!ai_used,
+  };
+
+  const { error } = await sb.from(TABLE).insert(row);
+  if (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+  return { ok: true };
 }
 
-/** Hardened schema for SAML config */
-const SAML_CONFIG_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["id", "saml", "domains", "created_at", "updated_at"],
-  properties: {
-    id: { type: "string", minLength: 1 },
+async function readLedger({ sb, limit }) {
+  const n = Number.isFinite(limit) ? limit : 20;
+  const take = Math.max(1, Math.min(200, n));
 
-    saml: {
-      type: "object",
-      additionalProperties: false,
-      required: ["id", "entity_id", "attribute_mapping", "name_id_format"],
-      properties: {
-        id: { type: "string", minLength: 1 },
-        entity_id: { type: "string", minLength: 1 },
+  const { data, error } = await sb
+    .from(TABLE)
+    .select("id, created_at, prompt, answer, ai_used")
+    .order("created_at", { ascending: false })
+    .limit(take);
 
-        // Exactly one must exist (enforced by oneOf below)
-        metadata_url: { type: "string", format: "uri" },
-        metadata_xml: { type: "string", minLength: 1 },
-
-        attribute_mapping: {
-          type: "object",
-          additionalProperties: false,
-          required: ["keys"],
-          properties: {
-            keys: {
-              type: "object",
-              minProperties: 1,
-              additionalProperties: {
-                type: "object",
-                additionalProperties: false,
-                required: ["name", "names", "array"],
-                properties: {
-                  name: { type: "string", minLength: 1 },
-                  names: {
-                    type: "array",
-                    minItems: 1,
-                    items: { type: "string", minLength: 1 },
-                  },
-                  default: {
-                    oneOf: [
-                      { type: "null" },
-                      { type: "number" },
-                      { type: "string" },
-                      { type: "boolean" },
-                      { type: "array", items: { type: "string" } },
-                    ],
-                  },
-                  array: { type: "boolean" },
-                },
-              },
-            },
-          },
-        },
-
-        name_id_format: {
-          type: "string",
-          enum: [
-            "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
-            "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
-            "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
-            "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
-          ],
-        },
-      },
-      oneOf: [
-        { required: ["metadata_url"], not: { required: ["metadata_xml"] } },
-        { required: ["metadata_xml"], not: { required: ["metadata_url"] } },
-      ],
-    },
-
-    domains: {
-      type: "array",
-      minItems: 1,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["id", "domain", "created_at", "updated_at"],
-        properties: {
-          id: { type: "string", minLength: 1 },
-          domain: { type: "string", minLength: 1 },
-          created_at: { type: "string", format: "date-time" },
-          updated_at: { type: "string", format: "date-time" },
-        },
-      },
-    },
-
-    created_at: { type: "string", format: "date-time" },
-    updated_at: { type: "string", format: "date-time" },
-  },
-};
-
-/** Envelope schema: XOR result or error */
-const ENVELOPE_SCHEMA = {
-  oneOf: [
-    {
-      type: "object",
-      additionalProperties: false,
-      required: ["result"],
-      properties: {
-        result: {
-          type: "array",
-          items: { type: "object" },
-        },
-      },
-    },
-    {
-      type: "object",
-      additionalProperties: false,
-      required: ["error"],
-      properties: {
-        error: {
-          oneOf: [
-            { type: "string" },
-            {
-              type: "object",
-              additionalProperties: false,
-              required: ["code", "errors", "message", "status"],
-              properties: {
-                code: { type: "number" },
-                status: { type: "string" },
-                message: { type: "string" },
-                errors: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["domain", "location", "locationType", "message", "reason"],
-                    properties: {
-                      domain: { type: "string" },
-                      location: { type: "string" },
-                      locationType: { type: "string" },
-                      message: { type: "string" },
-                      reason: { type: "string" },
-                    },
-                  },
-                },
-              },
-            },
-          ],
-        },
-      },
-    },
-  ],
-};
-
-const ajv = new Ajv({ allErrors: true, strict: true, allowUnionTypes: true });
-addFormats(ajv);
-
-const validateSaml = ajv.compile(SAML_CONFIG_SCHEMA);
-const validateEnvelope = ajv.compile(ENVELOPE_SCHEMA);
-
-function ajvToErrors(errs, domain = "schema") {
-  return (errs || []).map((e) =>
-    errItem({
-      domain,
-      location: e.instancePath ? `payload${e.instancePath}` : "payload",
-      locationType: "body",
-      message: e.message || "validation error",
-      reason: e.keyword || "validation",
-    })
-  );
-}
-
-function normalizeSamlConfig(payload) {
-  const out = structuredClone(payload);
-
-  if (Array.isArray(out.domains)) {
-    out.domains = out.domains.map((d) => {
-      const domain = typeof d.domain === "string" ? d.domain.trim().toLowerCase() : d.domain;
-      return { ...d, domain };
-    });
-  }
-
-  if (out.saml && typeof out.saml.metadata_url === "string") out.saml.metadata_url = out.saml.metadata_url.trim();
-  if (out.saml && typeof out.saml.metadata_xml === "string") out.saml.metadata_xml = out.saml.metadata_xml.trim();
-
-  const keys = out?.saml?.attribute_mapping?.keys;
-  if (keys && typeof keys === "object") {
-    for (const k of Object.keys(keys)) {
-      const m = keys[k];
-      if (m && Array.isArray(m.names)) {
-        m.names = m.names.map((x) => (typeof x === "string" ? x.trim() : x)).filter(Boolean);
-      }
-      if (typeof m?.name === "string") m.name = m.name.trim();
-    }
-  }
-
-  return out;
-}
-
-function auditSamlConfig(cfg) {
-  const findings = [];
-
-  if (cfg?.saml?.metadata_url) {
-    try {
-      const u = new URL(cfg.saml.metadata_url);
-      if (u.protocol !== "https:") {
-        findings.push({
-          severity: "high",
-          code: "METADATA_URL_NOT_HTTPS",
-          message: "metadata_url should be https to avoid MITM.",
-          location: "payload.saml.metadata_url",
-        });
-      }
-    } catch {
-      findings.push({
-        severity: "high",
-        code: "METADATA_URL_INVALID",
-        message: "metadata_url is not a valid URI.",
-        location: "payload.saml.metadata_url",
-      });
-    }
-  }
-
-  if (cfg?.saml?.entity_id && !cfg.saml.entity_id.includes(":")) {
-    findings.push({
-      severity: "medium",
-      code: "ENTITY_ID_SUSPICIOUS",
-      message: "entity_id is usually a URI; verify it matches your IdP.",
-      location: "payload.saml.entity_id",
-    });
-  }
-
-  for (const d of cfg.domains || []) {
-    if (typeof d.domain === "string") {
-      if (d.domain.includes(" ")) {
-        findings.push({
-          severity: "high",
-          code: "DOMAIN_HAS_SPACES",
-          message: "Domain contains spaces; invalid.",
-          location: "payload.domains[].domain",
-        });
-      }
-      if (d.domain.includes("http://") || d.domain.includes("https://")) {
-        findings.push({
-          severity: "high",
-          code: "DOMAIN_LOOKS_LIKE_URL",
-          message: "Domain should be a hostname, not a URL.",
-          location: "payload.domains[].domain",
-        });
-      }
-      if (d.domain.split(".").length < 2) {
-        findings.push({
-          severity: "medium",
-          code: "DOMAIN_MISSING_TLD",
-          message: "Domain missing a dot/TLD; verify.",
-          location: "payload.domains[].domain",
-        });
-      }
-    }
-  }
-
-  const keys = cfg?.saml?.attribute_mapping?.keys || {};
-  const keyNames = Object.keys(keys);
-  if (keyNames.length === 0) {
-    findings.push({
-      severity: "high",
-      code: "ATTRIBUTE_MAPPING_EMPTY",
-      message: "attribute_mapping.keys is empty; users may not map correctly.",
-      location: "payload.saml.attribute_mapping.keys",
-    });
-  } else {
-    const present = new Set();
-    for (const k of keyNames) {
-      const entry = keys[k];
-      if (typeof entry?.name === "string") present.add(entry.name.toLowerCase());
-      if (Array.isArray(entry?.names)) entry.names.forEach((n) => typeof n === "string" && present.add(n.toLowerCase()));
-    }
-    if (!present.has("email")) {
-      findings.push({
-        severity: "medium",
-        code: "EMAIL_MAPPING_MISSING",
-        message: "No obvious email attribute mapping detected; verify IdP attributes.",
-        location: "payload.saml.attribute_mapping.keys",
-      });
-    }
-  }
-
-  return findings;
-}
-
-function parseBody(event) {
-  try {
-    return event.body ? JSON.parse(event.body) : {};
-  } catch {
-    return null;
-  }
+  if (error) return { ok: false, error: error.message || String(error), data: [] };
+  return { ok: true, data: data || [] };
 }
 
 export const handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors, body: "" };
-
-  if (event.httpMethod === "GET") {
-    try {
-      const url = new URL(event.rawUrl);
-      const mode = (url.searchParams.get("mode") || "health").toLowerCase();
-
-      if (mode === "spec") {
-        return ok([
-          {
-            type: "validator_spec",
-            modes: ["validate_saml_config", "audit_saml_config", "validate_envelope_contract"],
-            contracts: ["xor_envelope"],
-          },
-        ]);
-      }
-
-      return ok([
-        {
-          type: "health",
-          ok: true,
-          runtime: { node: process.version },
-        },
-      ]);
-    } catch (e) {
-      return fail(500, "INTERNAL", "health/spec failed", [
-        errItem({
-          domain: "runtime",
-          location: "handler(GET)",
-          locationType: "function",
-          message: String(e?.message || e),
-          reason: "exception",
-        }),
-      ]);
+  try {
+    if (event.httpMethod === "OPTIONS") {
+      return { statusCode: 204, headers: corsHeaders, body: "" };
     }
-  }
 
-  if (event.httpMethod !== "POST") return fail(405, "METHOD_NOT_ALLOWED", "Use POST");
+    const url = new URL(event.rawUrl || `https://local${event.path || "/api/react"}`);
+    const op = (url.searchParams.get("op") || "").toLowerCase();
 
-  const body = parseBody(event);
-  if (!body) return fail(400, "INVALID_ARGUMENT", "Body must be valid JSON");
+    const sb = supabaseClient();
 
-  const mode = String(body.mode || "").trim();
+    // HEALTH
+    if (event.httpMethod === "GET" && op === "health") {
+      const env = {
+        has_SUPABASE_URL: !!requiredEnv("SUPABASE_URL"),
+        has_SUPABASE_SERVICE_ROLE_KEY: !!requiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+        has_SUPABASE_ANON_KEY: !!requiredEnv("SUPABASE_ANON_KEY"),
+        has_OPENAI_API_KEY: !!requiredEnv("OPENAI_API_KEY"),
+        OPENAI_MODEL: requiredEnv("OPENAI_MODEL") || "gpt-4.1-mini",
+        TABLE,
+        server_time: nowIso(),
+      };
 
-  if (mode === "validate_envelope_contract") {
-    const payload = body.payload;
-    const valid = validateEnvelope(payload);
-    if (!valid) {
-      return fail(400, "INVALID_ARGUMENT", "Envelope contract validation failed", ajvToErrors(validateEnvelope.errors, "envelope"));
+      if (!sb) return json(200, { ok: true, env, supabase: { ok: false, error: "Supabase env missing" } });
+
+      // quick read test (non-fatal)
+      const ping = await readLedger({ sb, limit: 1 });
+      return json(200, { ok: true, env, supabase: { ok: ping.ok, error: ping.ok ? null : ping.error } });
     }
-    return ok([{ type: "envelope_validation", valid: true }]);
+
+    // LEDGER
+    if (event.httpMethod === "GET" && (op === "ledger" || op === "memory" || op === "log")) {
+      if (!sb) return json(500, { ok: false, error: "Supabase env missing (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY recommended)" });
+
+      const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+      const ledger = await readLedger({ sb, limit });
+      if (!ledger.ok) return json(500, { ok: false, error: ledger.error, data: [] });
+
+      return json(200, { ok: true, data: ledger.data });
+    }
+
+    // EXECUTE
+    if (event.httpMethod !== "POST") {
+      return json(405, { ok: false, error: "Method not allowed. Use POST to execute, GET ?op=ledger for memory." });
+    }
+
+    let body = {};
+    try { body = event.body ? JSON.parse(event.body) : {}; } catch { body = {}; }
+
+    const prompt = safeTrim(body?.prompt ?? body?.input ?? "", 12000);
+    if (!prompt) return json(400, { ok: false, error: "Missing prompt" });
+
+    const run_id = crypto?.randomUUID?.() || `run_${Date.now()}`;
+
+    // 1) call OpenAI (or fallback)
+    const ai = await openaiRespond({ prompt });
+
+    // 2) log to ledger (always attempt)
+    let ledgerStatus = { ok: false, error: "Supabase env missing" };
+    if (sb) {
+      ledgerStatus = await logToLedger({
+        sb,
+        prompt,
+        answer: ai.output,
+        ai_used: ai.ai_used,
+      });
+    }
+
+    // 3) respond to client with full diagnostics
+    return json(200, {
+      ok: true,
+      run_id,
+      ai_used: ai.ai_used,
+      model: ai.model,
+      output: ai.output,
+      openai_ok: ai.ok,
+      openai_error: ai.error,
+      openai_meta: ai.meta || null,
+      ledger_ok: ledgerStatus.ok,
+      ledger_error: ledgerStatus.ok ? null : ledgerStatus.error,
+      server_time: nowIso(),
+    });
+  } catch (e) {
+    return json(500, {
+      ok: false,
+      error: e?.message ? String(e.message) : "Unhandled server error",
+      server_time: nowIso(),
+    });
   }
-
-  if (mode !== "validate_saml_config" && mode !== "audit_saml_config") {
-    return fail(400, "INVALID_ARGUMENT", "Invalid mode", [
-      errItem({
-        domain: "request",
-        location: "body.mode",
-        locationType: "body",
-        message: "mode must be one of: validate_saml_config | audit_saml_config | validate_envelope_contract",
-        reason: "invalid_mode",
-      }),
-    ]);
-  }
-
-  if (!body.payload || typeof body.payload !== "object") {
-    return fail(400, "INVALID_ARGUMENT", "payload must be an object", [
-      errItem({
-        domain: "request",
-        location: "body.payload",
-        locationType: "body",
-        message: "payload must be an object",
-        reason: "invalid_payload",
-      }),
-    ]);
-  }
-
-  const normalized = normalizeSamlConfig(body.payload);
-
-  const valid = validateSaml(normalized);
-  if (!valid) {
-    return fail(400, "INVALID_ARGUMENT", "SAML config schema validation failed", ajvToErrors(validateSaml.errors, "saml_config"));
-  }
-
-  if (mode === "audit_saml_config") {
-    const findings = auditSamlConfig(normalized);
-    return ok([
-      {
-        type: "saml_config_audit",
-        valid: true,
-        findings,
-        normalized,
-      },
-    ]);
-  }
-
-  return ok([
-    {
-      type: "saml_config_validation",
-      valid: true,
-      normalized,
-    },
-  ]);
 };
