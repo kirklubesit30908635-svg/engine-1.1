@@ -1,0 +1,11 @@
+{
+  "name": "engine-one-validator",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "description": "Engine One Validator (extreme, fail-loud) - JSON Schema validation + normalization + audit hints for SAML config and contract envelopes.",
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  }
+}
