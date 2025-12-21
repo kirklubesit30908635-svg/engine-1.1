@@ -1,0 +1,61 @@
+// Console.tsx PATCH: replace ONLY your execute() implementation with the block below.
+// Also ensure this import exists at top-level of Console.tsx:
+//
+//   import { supabase } from "../lib/supabase";
+//
+// Then replace execute() with:
+
+  async function execute() {
+    setBusy(true);
+    setError(null);
+    setMeta(null);
+
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      if (!token) throw new Error("Not authenticated");
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          ...(engineKey.trim() ? { "x-engine-key": engineKey.trim() } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          input,
+          archetype,
+          temperature,
+          max_output_tokens: maxTokens,
+          persist: true,
+          create_proof_artifact: true,
+          tags: ["cockpit", "engine_one", archetype],
+        }),
+      });
+
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Non-JSON response (${res.status}): ${text.slice(0, 500)}`);
+      }
+
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+
+      setOutput(data.output ?? "(no output)");
+      setMeta({
+        latency_ms: data.latency_ms,
+        run_id: data?.run?.id,
+        proof_id: data?.proof?.id,
+      });
+    } catch (e: any) {
+      setError(e?.message ?? "Execution failed");
+      setOutput("Execution failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
